@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Asteroid Dodge — built from one prompt</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #050510; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; font-family: "Segoe UI", system-ui, sans-serif; }
+  #wrap { position: relative; width: min(100vw, 177.78vh); height: min(100vh, 56.25vw); }
+  canvas { display: block; width: 100%; height: 100%; background: #050510; }
+  #hint {
+    position: absolute; left: 0; right: 0; bottom: 10px; text-align: center;
+    color: rgba(255,255,255,0.55); font-size: 13px; letter-spacing: 0.08em;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="960" height="540"></canvas>
+  <div id="hint">ARROWS / WASD TO FLY &nbsp;·&nbsp; SPACE TO START &nbsp;·&nbsp; R TO FLY AGAIN</div>
+</div>
+<script>
+"use strict";
+const cv = document.getElementById("game");
+const ctx = cv.getContext("2d");
+const W = 960, H = 540;
+
+// ---- state ---------------------------------------------------------------
+const game = {
+  state: "menu",          // menu | playing | over
+  score: 0,
+  lives: 3,
+  best: 0,
+  time: 0,
+  shake: 0,
+  spawnAst: 0,
+  spawnStar: 0,
+};
+window.__game = game;
+
+const ship = { x: W / 2, y: H - 90, vx: 0, vy: 0, r: 16, inv: 0 };
+const keys = {};
+const asteroids = [];
+const stars = [];
+const parts = [];
+const bgStars = [];
+
+// ---- background starfield --------------------------------------------------
+for (let i = 0; i < 110; i++) {
+  bgStars.push({
+    x: Math.random() * W, y: Math.random() * H,
+    z: 0.3 + Math.random() * 0.9, s: Math.random() < 0.8 ? 1 : 2,
+  });
+}
+
+function rand(a, b) { return a + Math.random() * (b - a); }
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function dist2(ax, ay, bx, by) { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
+
+addEventListener("keydown", (e) => {
+  keys[e.key.toLowerCase()] = true;
+  if (e.key === " " || e.key === "ArrowUp" || e.key === "ArrowDown") e.preventDefault();
+  if (e.key === " " && game.state === "menu") startGame();
+  if ((e.key === "r" || e.key === "R") && game.state === "over") startGame();
+  if (e.key === " " && game.state === "over") startGame();
+});
+addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
+cv.addEventListener("pointerdown", () => {
+  if (game.state !== "playing") startGame();
+});
+
+function startGame() {
+  game.state = "playing";
+  game.score = 0;
+  game.lives = 3;
+  game.time = 0;
+  game.shake = 0;
+  game.spawnAst = 0.4;
+  game.spawnStar = 0.8;
+  asteroids.length = 0;
+  stars.length = 0;
+  parts.length = 0;
+  ship.x = W / 2; ship.y = H - 90; ship.vx = 0; ship.vy = 0; ship.inv = 0;
+}
+
+// ---- spawning ---------------------------------------------------------------
+function spawnAsteroid() {
+  const r = rand(14, 34);
+  asteroids.push({
+    x: rand(r, W - r), y: -r - 10,
+    vx: rand(-30, 30), vy: rand(90, 170) + game.score * 0.25,
+    r: r, rot: rand(0, Math.PI * 2), vr: rand(-1.2, 1.2),
+    verts: Array.from({ length: 9 }, (_, i) => {
+      const a = (i / 9) * Math.PI * 2;
+      return { a: a, d: rand(0.75, 1.05) };
+    }),
+  });
+}
+function spawnStar() {
+  stars.push({ x: rand(20, W - 20), y: -16, vy: rand(70, 120), r: 11, ph: rand(0, Math.PI * 2) });
+}
+function burst(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, Math.PI * 2), s = rand(40, 220);
+    parts.push({ x: x, y: y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: rand(0.3, 0.8), color: color });
+  }
+}
+
+// ---- update ------------------------------------------------------------------
+function update(dt) {
+  game.time += dt;
+  if (game.state !== "playing") return;
+
+  // steering: snappy acceleration, gentle damping
+  const ax = (keys["arrowright"] || keys["d"] ? 1 : 0) - (keys["arrowleft"] || keys["a"] ? 1 : 0);
+  const ay = (keys["arrowdown"] || keys["s"] ? 1 : 0) - (keys["arrowup"] || keys["w"] ? 1 : 0);
+  ship.vx += ax * 1400 * dt;
+  ship.vy += ay * 1400 * dt;
+  ship.vx *= Math.pow(0.12, dt);
+  ship.vy *= Math.pow(0.12, dt);
+  ship.x = clamp(ship.x + ship.vx * dt, 20, W - 20);
+  ship.y = clamp(ship.y + ship.vy * dt, 20, H - 20);
+  if (ship.inv > 0) ship.inv -= dt;
+
+  // survival trickle + difficulty ramp
+  game.score += dt * 1;
+  const astRate = Math.max(0.45, 0.95 - game.score * 0.002);
+  game.spawnAst -= dt;
+  if (game.spawnAst <= 0) { spawnAsteroid(); game.spawnAst = astRate * rand(0.7, 1.3); }
+  game.spawnStar -= dt;
+  if (game.spawnStar <= 0) { spawnStar(); game.spawnStar = rand(1.0, 1.8); }
+
+  for (let i = asteroids.length - 1; i >= 0; i--) {
+    const a = asteroids[i];
+    a.x += a.vx * dt; a.y += a.vy * dt; a.rot += a.vr * dt;
+    if (a.y - a.r > H + 20 || a.x < -60 || a.x > W + 60) { asteroids.splice(i, 1); continue; }
+    if (ship.inv <= 0 && dist2(a.x, a.y, ship.x, ship.y) < (a.r * 0.82 + ship.r * 0.8) ** 2) {
+      asteroids.splice(i, 1);
+      game.lives -= 1;
+      game.shake = 0.45;
+      ship.inv = 1.6;
+      burst(ship.x, ship.y, "#ff6b35", 26);
+      burst(ship.x, ship.y, "#ffd23f", 14);
+      if (game.lives <= 0) {
+        game.state = "over";
+        game.best = Math.max(game.best, Math.floor(game.score));
+        burst(ship.x, ship.y, "#ffffff", 40);
+      }
+    }
+  }
+  for (let i = stars.length - 1; i >= 0; i--) {
+    const s = stars[i];
+    s.y += s.vy * dt; s.ph += dt * 5;
+    if (s.y - s.r > H + 20) { stars.splice(i, 1); continue; }
+    if (dist2(s.x, s.y, ship.x, ship.y) < (s.r + ship.r) ** 2) {
+      stars.splice(i, 1);
+      game.score += 10;
+      burst(s.x, s.y, "#ffd23f", 12);
+    }
+  }
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.98; p.vy *= 0.98; p.life -= dt;
+    if (p.life <= 0) parts.splice(i, 1);
+  }
+  if (game.shake > 0) game.shake -= dt;
+}
+
+// ---- drawing ------------------------------------------------------------------
+function drawShip() {
+  ctx.save();
+  ctx.translate(ship.x, ship.y);
+  if (ship.inv > 0 && Math.floor(game.time * 12) % 2 === 0) ctx.globalAlpha = 0.35;
+  // flame
+  const fl = 14 + Math.sin(game.time * 40) * 5;
+  ctx.fillStyle = "#ff9f1c";
+  ctx.beginPath();
+  ctx.moveTo(-7, 12); ctx.lineTo(0, 12 + fl); ctx.lineTo(7, 12);
+  ctx.closePath(); ctx.fill();
+  // body
+  ctx.fillStyle = "#f4f4f4";
+  ctx.beginPath();
+  ctx.moveTo(0, -20); ctx.lineTo(11, 12); ctx.lineTo(5, 8); ctx.lineTo(-5, 8); ctx.lineTo(-11, 12);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "#ff6b35";
+  ctx.beginPath(); ctx.moveTo(0, -20); ctx.lineTo(5, 2); ctx.lineTo(-5, 2); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "#2ec4b6";
+  ctx.beginPath(); ctx.arc(0, -4, 4, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+function drawAsteroid(a) {
+  ctx.save();
+  ctx.translate(a.x, a.y);
+  ctx.rotate(a.rot);
+  ctx.fillStyle = "#8d99ae";
+  ctx.strokeStyle = "#6c757d";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  a.verts.forEach((v, i) => {
+    const x = Math.cos(v.a) * a.r * v.d, y = Math.sin(v.a) * a.r * v.d;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
+  ctx.beginPath(); ctx.arc(-a.r * 0.3, -a.r * 0.2, a.r * 0.22, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(a.r * 0.35, a.r * 0.3, a.r * 0.16, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+function drawStar(s) {
+  const tw = 0.6 + 0.4 * Math.sin(s.ph);
+  ctx.save();
+  ctx.translate(s.x, s.y);
+  ctx.globalAlpha = tw;
+  ctx.fillStyle = "#ffd23f";
+  ctx.beginPath();
+  ctx.moveTo(0, -s.r); ctx.lineTo(s.r * 0.32, -s.r * 0.32); ctx.lineTo(s.r, 0);
+  ctx.lineTo(s.r * 0.32, s.r * 0.32); ctx.lineTo(0, s.r); ctx.lineTo(-s.r * 0.32, s.r * 0.32);
+  ctx.lineTo(-s.r, 0); ctx.lineTo(-s.r * 0.32, -s.r * 0.32);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+function drawText(text, x, y, size, color, align) {
+  ctx.font = "bold " + size + "px 'Segoe UI', system-ui, sans-serif";
+  ctx.fillStyle = color;
+  ctx.textAlign = align || "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, x, y);
+}
+function draw() {
+  ctx.save();
+  if (game.shake > 0) {
+    ctx.translate(rand(-6, 6) * game.shake * 2, rand(-6, 6) * game.shake * 2);
+  }
+  ctx.fillStyle = "#050510";
+  ctx.fillRect(-20, -20, W + 40, H + 40);
+  for (const s of bgStars) {
+    ctx.globalAlpha = 0.35 + s.z * 0.5;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(s.x, (s.y + game.time * 14 * s.z) % H, s.s, s.s);
+  }
+  ctx.globalAlpha = 1;
+  for (const s of stars) drawStar(s);
+  for (const a of asteroids) drawAsteroid(a);
+  for (const p of parts) {
+    ctx.globalAlpha = Math.max(0, p.life * 1.6);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+  }
+  ctx.globalAlpha = 1;
+  if (game.state === "playing" || game.state === "over") drawShip();
+  // HUD
+  drawText("SCORE  " + Math.floor(game.score), 16, 26, 20, "#ffffff", "left");
+  drawText("BEST  " + game.best, W - 16, 26, 20, "rgba(255,255,255,0.6)", "right");
+  for (let i = 0; i < 3; i++) {
+    ctx.fillStyle = i < game.lives ? "#ff5964" : "rgba(255,255,255,0.18)";
+    ctx.beginPath();
+    const hx = 30 + i * 28, hy = 56;
+    ctx.moveTo(hx, hy + 6); ctx.lineTo(hx - 8, hy - 4); ctx.lineTo(hx, hy - 9);
+    ctx.lineTo(hx + 8, hy - 4); ctx.closePath(); ctx.fill();
+  }
+  if (game.state === "menu") {
+    ctx.fillStyle = "rgba(5,5,16,0.55)";
+    ctx.fillRect(0, 0, W, H);
+    drawText("ASTEROID DODGE", W / 2, H / 2 - 70, 54, "#ffffff");
+    drawText("One prompt. One rocket. Too many rocks.", W / 2, H / 2 - 18, 20, "#2ec4b6");
+    drawText("Dodge the asteroids. Grab the stars. Three hits and you're done.", W / 2, H / 2 + 18, 18, "rgba(255,255,255,0.85)");
+    drawText("PRESS SPACE TO FLY", W / 2, H / 2 + 78, 22, "#ffd23f");
+  }
+  if (game.state === "over") {
+    ctx.fillStyle = "rgba(5,5,16,0.6)";
+    ctx.fillRect(0, 0, W, H);
+    drawText("GAME OVER", W / 2, H / 2 - 56, 48, "#ff5964");
+    drawText("Score  " + Math.floor(game.score) + "   ·   Best  " + game.best, W / 2, H / 2, 22, "#ffffff");
+    drawText("PRESS R TO FLY AGAIN", W / 2, H / 2 + 56, 20, "#ffd23f");
+  }
+  ctx.restore();
+}
+
+// ---- main loop ------------------------------------------------------------------
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
